@@ -1,0 +1,49 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: studypilot
+      MYSQL_USER: studypilot
+      MYSQL_PASSWORD: studypilot_dev_password
+      MYSQL_ROOT_PASSWORD: root_dev_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot_dev_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://studypilot:studypilot_dev_password@mysql:3306/studypilot?charset=utf8mb4
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  bot:
+    build: ./bot
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://studypilot:studypilot_dev_password@mysql:3306/studypilot?charset=utf8mb4
+      API_BASE_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_started
+
+  frontend:
+    build: ./frontend
+    env_file: .env
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:
