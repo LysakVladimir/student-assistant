@@ -4,10 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .models import User, Lesson, BagRule
-from .schemas import UserPatch, LessonIn, BagRuleIn
+from .schemas import UserPatch, LessonIn, BagRuleIn, LessonParseIn
 from .security import current_user
-from .services import build_plan
+from .services import build_plan, save_guap_schedule, current_week_parity
 from .agent import agent_reply
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="StudyPilot API", version="0.1.0", description="Backend универсального интеллектуального ассистента студента")
@@ -50,6 +54,31 @@ def delete_lesson(lesson_id: int, db: Session = Depends(get_db), user: User = De
     if not row: raise HTTPException(404, "Занятие не найдено")
     db.delete(row); db.commit()
     return {"ok":True}
+
+
+@app.get("/api/week-parity")
+def week_parity():
+    """Текущая чётность недели (odd/even) для фильтрации занятий."""
+    return {"parity": current_week_parity()}
+
+
+@app.post("/api/lessons/parse")
+def parse_lessons(payload: LessonParseIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Спарсить официальное расписание ГУАП по номеру группы и добавить в расписание пользователя.
+
+    Существующие занятия не удаляются (replace=False). Чтобы полностью заменить расписание,
+    удалите текущие занятия вручную перед парсингом.
+    """
+    logger.info("[parse_lessons] user_id=%s group=%s", user.id, payload.group_name)
+    try:
+        saved = save_guap_schedule(db, user, payload.group_name, replace=False)
+        logger.info("[parse_lessons] saved %d lessons for group=%s", len(saved), payload.group_name)
+        return {"ok": True, "group": payload.group_name, "count": len(saved), "lessons": saved}
+    except Exception as e:
+        logger.exception("Ошибка при парсинге расписания для пользователя %s, группа %s: %s",
+                         user.id, payload.group_name, e)
+        raise HTTPException(500, f"Ошибка при парсинге расписания: {e}")
+
 
 @app.get("/api/bag-rules")
 def get_bag_rules(db: Session = Depends(get_db), user: User = Depends(current_user)):

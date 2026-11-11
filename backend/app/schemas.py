@@ -28,3 +28,7 @@ class BagRuleIn(BaseModel):
     match_type: Literal["always", "type", "keyword"] = "always"
     match_value: str = ""
     items: str = Field(min_length=1, max_length=2000)
+
+
+class LessonParseIn(BaseModel):
+    group_name: str = Field(min_length=1, max_length=100)
