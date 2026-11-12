@@ -64,3 +64,53 @@ def test_real_guap_page_group_4414():
     assert _time_range("4 пара (9:30—11:00)") == ("09:30", "11:00")
     assert _map_lesson_type("Практическое занятие", "Прикладная физическая культура") == "physical"
     assert _map_lesson_type("Практическое занятие", "Введение в анализ данных") == "seminar"
+
+
+def test_city_must_be_in_russian():
+    import pytest
+    from pydantic import ValidationError
+    from backend.app.schemas import UserPatch
+    assert UserPatch(home_address=" Санкт-Петербург ").home_address == "Санкт-Петербург"
+    assert UserPatch(home_address="").home_address == ""
+    with pytest.raises(ValidationError):
+        UserPatch(home_address="Moscow")
+
+
+def test_weather_forecast_parsing(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    import backend.app.services as svc
+
+    class Resp:
+        def __init__(self, data): self._d = data
+        def raise_for_status(self): pass
+        def json(self): return self._d
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        async def get(self, url, params=None):
+            if "geocoding" in url:
+                assert params["language"] == "ru" and params["countryCode"] == "RU"
+                return Resp({"results": [{"name": "Санкт-Петербург", "admin1": "Санкт-Петербург", "latitude": 59.9, "longitude": 30.3}]})
+            times = [f"2026-11-12T{h:02d}:00" for h in range(24)] + [f"2026-11-13T{h:02d}:00" for h in range(24)]
+            return Resp({
+                "current": {"time": "2026-11-12T10:15", "temperature_2m": 2.4, "apparent_temperature": -1.0, "precipitation": 0.4,
+                            "weather_code": 61, "wind_speed_10m": 6.0, "relative_humidity_2m": 88},
+                "hourly": {"time": times, "temperature_2m": [1.0] * 48, "precipitation_probability": [40] * 48, "weather_code": [3] * 48},
+                "daily": {"time": ["2026-11-12", "2026-11-13", "2026-11-14"], "weather_code": [61, 3, 0],
+                          "temperature_2m_max": [3, 4, 5], "temperature_2m_min": [0, 1, 2], "precipitation_probability_max": [80, 30, 10]},
+            })
+
+    monkeypatch.setattr(svc.httpx, "AsyncClient", FakeClient)
+    user = SimpleNamespace(home_address="Санкт-Петербург", timezone="Europe/Moscow")
+    r = asyncio.run(svc.get_weather_forecast(user))
+    assert r["available"] and r["place"] == "Санкт-Петербург"
+    assert r["current"]["label"] == "Небольшой дождь"
+    assert r["hours"][0]["time"] == "10:00" and len(r["hours"]) == 8
+    assert [d["weekday"] for d in r["days"]] == ["Четверг", "Пятница", "Суббота"]
+    assert "Возьмите зонт или дождевик" in r["advice"]
+
+    empty = asyncio.run(svc.get_weather_forecast(SimpleNamespace(home_address="", timezone="Europe/Moscow")))
+    assert empty["available"] is False

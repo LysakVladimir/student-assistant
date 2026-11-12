@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
 LessonType = Literal["lecture", "seminar", "lab", "physical", "exam", "other"]
@@ -12,6 +13,14 @@ class UserPatch(BaseModel):
     prep_minutes: int | None = Field(default=None, ge=0, le=180)
     buffer_minutes: int | None = Field(default=None, ge=0, le=120)
     travel_mode: str | None = None
+
+    @field_validator("home_address")
+    @classmethod
+    def city_in_russian(cls, v):
+        v = (v or "").strip()
+        if v and re.search(r"[A-Za-z]", v):
+            raise ValueError("Введите город на русском языке, например: Санкт-Петербург")
+        return v
 
 class LessonIn(BaseModel):
     subject: str = Field(min_length=1, max_length=180)

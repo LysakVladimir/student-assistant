@@ -75,6 +75,7 @@ npm run dev -- --host 0.0.0.0
 - `/tomorrow` — план на завтра.
 - `/bag` — список вещей на ближайшие занятия.
 - `/windows` — свободные окна между парами.
+- `/weather` — погода по городу из настроек (город вводится на русском).
 - `/route` — оценка времени выхода.
 - `/settings` — текущие настройки.
 - `/help` — помощь.
@@ -97,6 +98,7 @@ npm run dev -- --host 0.0.0.0
 - `GET/POST /api/lessons`
 - `DELETE /api/lessons/{lesson_id}`
 - `POST /api/lessons/parse` — спарсить расписание ГУАП по номеру группы
+- `GET /api/weather` — погода по городу пользователя (Open-Meteo)
 - `GET /api/week-parity` — текущая чётность недели (odd/even)
 - `GET/POST /api/bag-rules`
 - `DELETE /api/bag-rules/{rule_id}`

@@ -13,7 +13,15 @@ const headers = () => {
 };
 async function request(path, options={}) {
   const res = await fetch(API+path, {...options, headers:{...headers(), ...(options.headers||{})}});
-  if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`);
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (Array.isArray(body.detail)) detail = body.detail.map(d => (d.msg || '').replace(/^Value error, /, '')).join('; ');
+      else if (body.detail) detail = body.detail;
+    } catch {}
+    throw new Error(detail);
+  }
   return res.json();
 }
 const days=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
@@ -21,6 +29,7 @@ const types=[['lecture','Лекция'],['seminar','Семинар'],['lab','Л�
 const parityLabels={both:'Обе недели',odd:'Нечётная',even:'Чётная'};
 function App(){
  const [tab,setTab]=useState('plan'), [plan,setPlan]=useState(null), [lessons,setLessons]=useState([]), [rules,setRules]=useState([]), [me,setMe]=useState(null), [err,setErr]=useState(''), [day,setDay]=useState('today'), [parity,setParity]=useState('both'), [parseGroup,setParseGroup]=useState(''), [parsing,setParsing]=useState(false);
+ const [weather,setWeather]=useState(null), [weatherLoading,setWeatherLoading]=useState(false);
  const [lesson,setLesson]=useState({subject:'',lesson_type:'lecture',weekday:new Date().getDay()===0?6:new Date().getDay()-1,start_time:'09:00',end_time:'10:30',room:'',campus:'',week_parity:'both',notes:''});
  const [rule,setRule]=useState({match_type:'always',match_value:'',items:''});
  async function refresh(){
@@ -28,14 +37,16 @@ function App(){
    catch(e){setErr(e.message+' — проверьте запуск backend и авторизацию Mini App.');}
  }
  useEffect(()=>{try{WebApp.ready();WebApp.expand();}catch{} refresh();},[day]);
+ async function loadWeather(){setWeatherLoading(true);try{setErr('');setWeather(await request('/api/weather'));}catch(e){setErr(e.message)}finally{setWeatherLoading(false)}}
+ useEffect(()=>{if(tab==='weather')loadWeather();},[tab]);
  async function addLesson(e){e.preventDefault();try{await request('/api/lessons',{method:'POST',body:JSON.stringify(lesson)});setLesson({...lesson,subject:''});refresh();}catch(e){setErr(e.message)}}
  async function addRule(e){e.preventDefault();try{await request('/api/bag-rules',{method:'POST',body:JSON.stringify(rule)});setRule({...rule,items:''});refresh();}catch(e){setErr(e.message)}}
  async function parseSchedule(e){e&&e.preventDefault();setParsing(true);setErr('');try{const g=parseGroup.trim();console.log('[parseSchedule] started, group=',g);if(!g)throw new Error('Введите номер группы');const res=await request('/api/lessons/parse',{method:'POST',body:JSON.stringify({group_name:g})});console.log('[parseSchedule] response=',res);setErr('Расписание группы '+g+' спарсено: '+res.count+' занятий'+(res.count===0?' (занятия не найдены — проверьте номер группы)' :''));setParseGroup('');refresh();}catch(e){console.error('[parseSchedule] error=',e);setErr(e.message)}finally{setParsing(false)}}
  async function remove(path){try{await request(path,{method:'DELETE'});refresh()}catch(e){setErr(e.message)}}
- async function saveMe(e){e.preventDefault();try{await request('/api/me',{method:'PATCH',body:JSON.stringify(me)});setErr('Настройки сохранены');}catch(e){setErr(e.message)}}
+ async function saveMe(e){e.preventDefault();try{if(/[A-Za-z]/.test(me.home_address||''))throw new Error('Введите город на русском языке, например: Санкт-Петербург');await request('/api/me',{method:'PATCH',body:JSON.stringify(me)});setErr('Настройки сохранены');}catch(e){setErr(e.message)}}
  return <main>
   <header><div className="logo">🎓 StudyPilot</div><div className="sub">Твой учебный день под контролем</div></header>
-  <nav>{[['plan','План'],['schedule','Расписание'],['bag','Рюкзак'],['settings','Настройки']].map(([id,label])=><button className={tab===id?'active':''} onClick={()=>setTab(id)} key={id}>{label}</button>)}</nav>
+  <nav>{[['plan','План'],['schedule','Расписание'],['weather','Погода'],['bag','Рюкзак'],['settings','Настройки']].map(([id,label])=><button className={tab===id?'active':''} onClick={()=>setTab(id)} key={id}>{label}</button>)}</nav>
   {err&&<div className="alert" style={{color:'#c0392b',fontWeight:600,padding:'10px',background:'#fdecea',borderRadius:'8px',margin:'10px 0'}}>{err}</div>}
   {tab==='plan'&&<section><div className="row"><h2>План дня</h2><select value={day} onChange={e=>setDay(e.target.value)}><option value="today">Сегодня</option><option value="tomorrow">Завтра</option></select></div>
     {plan&&<><p className="muted">{plan.weekday} · {plan.date}</p><div className="hero"><span>🚪 Рекомендуемое время выхода</span><strong>{plan.departure_time||'—:—'}</strong><small>Дорога {plan.travel_minutes} мин. + сборы и запас</small></div>
@@ -53,6 +64,16 @@ function App(){
     <div className="panel"><h3 style={{margin:'0 0 8px 0'}}>Спарсить расписание ГУАП по группе</h3><p className="muted">Введите номер группы. Текущие занятия будут заменены спарсенными.</p><div className="two"><label>Номер группы<input value={parseGroup} onChange={e=>setParseGroup(e.target.value)} placeholder="Например, 4414"/></label><button className="primary" onClick={parseSchedule} disabled={parsing}>{parsing?'Идёт парсинг...':'Спарсить расписание'}</button></div></div>
     {lessons.map(l=><article key={l.id}><b>{days[l.weekday]} {l.start}–{l.end}</b><span>{l.subject}</span><small>{types.find(t=>t[0]===l.type)?.[1]||l.type} · {l.room||'аудитория не указана'} · {parityLabels[l.week_parity]||l.week_parity}</small><button className="delete" onClick={()=>remove('/api/lessons/'+l.id)}>Удалить</button></article>)}
   </section>}
+  {tab==='weather'&&<section><div className="row"><h2>Погода</h2><button className="primary" onClick={loadWeather} disabled={weatherLoading}>{weatherLoading?'Загрузка...':'Обновить'}</button></div>
+    {weather&&!weather.available&&<div className="hint">{weather.message} <br/>Город задаётся во вкладке «Настройки».</div>}
+    {weather&&weather.available&&<><p className="muted">{weather.place}{weather.region?', '+weather.region:''}</p>
+    <div className="hero"><span>{weather.current.icon} {weather.current.label}</span><strong>{Math.round(weather.current.temperature)}°C</strong><small>Ощущается как {Math.round(weather.current.feels_like)}°C · ветер {weather.current.wind} м/с · влажность {weather.current.humidity}%{weather.current.precipitation>0?' · осадки '+weather.current.precipitation+' мм':''}</small></div>
+    <h3>🎒 Что надеть и взять</h3><div className="pilllist">{weather.advice.map(a=><span className="pill" key={a}>{a}</span>)}</div>
+    <h3>Ближайшие сутки</h3>{weather.hours.map(h=><article key={h.time}><b>{h.time}</b><span>{h.icon} {Math.round(h.temperature)}°C · {h.label}</span><small>Вероятность осадков: {h.precip_prob}%</small></article>)}
+    <h3>На 3 дня</h3>{weather.days.map(d=><article key={d.date}><b>{d.weekday}, {d.date.slice(8,10)}.{d.date.slice(5,7)}</b><span>{d.icon} {Math.round(d.t_min)}…{Math.round(d.t_max)}°C · {d.label}</span><small>Вероятность осадков: {d.precip_prob}%</small></article>)}
+    <p className="warning">Данные: Open-Meteo.</p></>}
+    {!weather&&weatherLoading&&<p className="muted">Загружаем погоду…</p>}
+  </section>}
   {tab==='bag'&&<section><h2>Правила рюкзака</h2><p className="muted">Вещи разделяйте запятыми. Примеры: зарядка, пропуск, наушники.</p><form onSubmit={addRule} className="panel">
     <label>Когда применять<select value={rule.match_type} onChange={e=>setRule({...rule,match_type:e.target.value})}><option value="always">Всегда</option><option value="type">По типу занятия</option><option value="keyword">По слову в названии</option></select></label>
     {rule.match_type!=='always'&&<label>{rule.match_type==='type'?'Тип занятия':'Ключевое слово'}{rule.match_type==='type'?<select value={rule.match_value} onChange={e=>setRule({...rule,match_value:e.target.value})}>{types.map(([v,t])=><option value={v} key={v}>{t}</option>)}</select>:<input value={rule.match_value} onChange={e=>setRule({...rule,match_value:e.target.value})} required/>}</label>}
@@ -61,10 +82,10 @@ function App(){
     <div className="hint">По умолчанию физкультура добавляет форму и обувь, лабораторная — методичку и тетрадь, экзамен — студенческий билет и ручки.</div>
   </section>}
   {tab==='settings'&&<section><h2>Личный кабинет</h2>{me&&<form onSubmit={saveMe} className="panel">
-    <label>Имя<input value={me.name} onChange={e=>setMe({...me,name:e.target.value})}/></label><label>Город или адрес для погоды<input value={me.home_address} onChange={e=>setMe({...me,home_address:e.target.value})} placeholder="например, Stockholm"/></label><label>Корпус вуза<input value={me.campus_name} onChange={e=>setMe({...me,campus_name:e.target.value})}/></label>
+    <label>Имя<input value={me.name} onChange={e=>setMe({...me,name:e.target.value})}/></label><label>Город (на русском языке)<input value={me.home_address} onChange={e=>setMe({...me,home_address:e.target.value})} placeholder="Например, Санкт-Петербург"/></label><label>Корпус вуза<input value={me.campus_name} onChange={e=>setMe({...me,campus_name:e.target.value})}/></label>
     <div className="two"><label>Время пути, мин.<input type="number" min="0" max="300" value={me.travel_minutes} onChange={e=>setMe({...me,travel_minutes:+e.target.value})}/></label><label>Сборы, мин.<input type="number" min="0" max="180" value={me.prep_minutes} onChange={e=>setMe({...me,prep_minutes:+e.target.value})}/></label></div>
     <label>Запас времени, мин.<input type="number" min="0" max="120" value={me.buffer_minutes} onChange={e=>setMe({...me,buffer_minutes:+e.target.value})}/></label><button className="primary">Сохранить настройки</button></form>}
-    <div className="hint">Погода загружается из Open-Meteo по указанному городу/адресу. Реальные пробки и транспорт пока не подключены.</div>
+    <div className="hint">Погода загружается из Open-Meteo по городу, указанному на русском языке. Реальные пробки и транспорт пока не подключены.</div>
   </section>}
   <footer>StudyPilot · MVP курсового проекта</footer>
  </main>

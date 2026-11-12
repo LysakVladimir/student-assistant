@@ -6,7 +6,7 @@ from .db import Base, engine, get_db
 from .models import User, Lesson, BagRule
 from .schemas import UserPatch, LessonIn, BagRuleIn, LessonParseIn
 from .security import current_user
-from .services import build_plan, save_guap_schedule, current_week_parity
+from .services import build_plan, save_guap_schedule, current_week_parity, get_weather_forecast
 from .agent import agent_reply
 
 import logging
@@ -97,6 +97,11 @@ def delete_bag_rule(rule_id: int, db: Session = Depends(get_db), user: User = De
     if not row: raise HTTPException(404, "Правило не найдено")
     db.delete(row); db.commit()
     return {"ok":True}
+
+@app.get("/api/weather")
+async def weather(user: User = Depends(current_user)):
+    """Погода по городу из настроек пользователя (город вводится на русском)."""
+    return await get_weather_forecast(user)
 
 @app.get("/api/plan")
 def plan(day: str = "today", db: Session = Depends(get_db), user: User = Depends(current_user)):

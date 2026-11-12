@@ -104,6 +104,94 @@ async def get_weather(user: User, at: datetime | None = None) -> dict:
     except Exception:
         return {"available": False, "message": "Сервис погоды временно недоступен."}
 
+WEATHER_CODES = {
+    0: ("Ясно", "☀️"), 1: ("Преимущественно ясно", "🌤️"), 2: ("Переменная облачность", "⛅"), 3: ("Пасмурно", "☁️"),
+    45: ("Туман", "🌫️"), 48: ("Изморозь", "🌫️"),
+    51: ("Слабая морось", "🌦️"), 53: ("Морось", "🌦️"), 55: ("Сильная морось", "🌧️"),
+    56: ("Ледяная морось", "🌧️"), 57: ("Сильная ледяная морось", "🌧️"),
+    61: ("Небольшой дождь", "🌦️"), 63: ("Дождь", "🌧️"), 65: ("Сильный дождь", "🌧️"),
+    66: ("Ледяной дождь", "🌧️"), 67: ("Сильный ледяной дождь", "🌧️"),
+    71: ("Небольшой снег", "🌨️"), 73: ("Снег", "❄️"), 75: ("Сильный снег", "❄️"), 77: ("Снежные зёрна", "🌨️"),
+    80: ("Небольшие ливни", "🌦️"), 81: ("Ливни", "🌧️"), 82: ("Сильные ливни", "⛈️"),
+    85: ("Снегопад", "🌨️"), 86: ("Сильный снегопад", "❄️"),
+    95: ("Гроза", "⛈️"), 96: ("Гроза с градом", "⛈️"), 99: ("Сильная гроза с градом", "⛈️"),
+}
+
+def weather_code_info(code) -> dict:
+    label, icon = WEATHER_CODES.get(int(code) if code is not None else -1, ("Нет данных", "❔"))
+    return {"label": label, "icon": icon}
+
+def weather_advice(temp, precipitation, wind, code) -> list[str]:
+    """Простые советы по одежде/вещам; считаются обычным кодом, без ИИ."""
+    tips = []
+    rainy = (precipitation or 0) > 0.1 or (code in (51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99))
+    snowy = code in (71, 73, 75, 77, 85, 86)
+    if rainy: tips.append("Возьмите зонт или дождевик")
+    if snowy: tips.append("Тёплая обувь: на улице снег")
+    if temp is not None:
+        if temp <= -15: tips.append("Очень холодно: шапка, шарф и перчатки обязательны")
+        elif temp <= 0: tips.append("Мороз: тёплая куртка, шапка и перчатки")
+        elif temp <= 10: tips.append("Прохладно: нужна куртка")
+        elif temp <= 18: tips.append("Лёгкая куртка или свитер")
+        elif temp >= 28: tips.append("Жарко: возьмите воду, лучше лёгкая одежда")
+    if (wind or 0) >= 10: tips.append("Сильный ветер: капюшон или ветровка")
+    return tips or ["Погода спокойная, специальной экипировки не нужно"]
+
+async def get_weather_forecast(user: User) -> dict:
+    """Погода по городу из настроек: сейчас, по часам на ближайшие сутки и на 3 дня. Open-Meteo, ключ не нужен."""
+    query = (user.home_address or "").strip()
+    if not query:
+        return {"available": False, "message": "Укажите город на русском языке в настройках, чтобы увидеть погоду."}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            geo = await client.get("https://geocoding-api.open-meteo.com/v1/search",
+                                   params={"name": query, "count": 1, "language": "ru", "countryCode": "RU", "format": "json"})
+            geo.raise_for_status()
+            results = geo.json().get("results") or []
+            if not results:
+                return {"available": False, "message": f"Не нашли город «{query}» в России. Проверьте написание (например, «Санкт-Петербург»)."}
+            place = results[0]
+            forecast = await client.get("https://api.open-meteo.com/v1/forecast", params={
+                "latitude": place["latitude"], "longitude": place["longitude"], "timezone": user.timezone or "Europe/Moscow",
+                "current": "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,relative_humidity_2m",
+                "hourly": "temperature_2m,precipitation_probability,weather_code",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                "wind_speed_unit": "ms", "forecast_days": 3,
+            })
+            forecast.raise_for_status()
+            data = forecast.json()
+    except Exception:
+        logger.exception("Не удалось получить погоду для %r", query)
+        return {"available": False, "message": "Сервис погоды временно недоступен. Попробуйте позже."}
+
+    cur = data.get("current", {})
+    code = cur.get("weather_code")
+    info = weather_code_info(code)
+    now_key = (cur.get("time") or "")[:13]
+    hourly = data.get("hourly", {})
+    times = hourly.get("time", [])
+    start = next((i for i, t in enumerate(times) if t[:13] >= now_key), 0) if times else 0
+    hours = []
+    for i in range(start, min(start + 24, len(times)), 3):
+        hours.append({"time": times[i][11:16], "temperature": hourly["temperature_2m"][i],
+                      "precip_prob": hourly["precipitation_probability"][i],
+                      **weather_code_info(hourly["weather_code"][i])})
+    daily = data.get("daily", {})
+    days = []
+    for i, d in enumerate(daily.get("time", [])):
+        dd = date.fromisoformat(d)
+        days.append({"date": d, "weekday": WEEKDAYS_RU[dd.weekday()], "t_max": daily["temperature_2m_max"][i],
+                     "t_min": daily["temperature_2m_min"][i], "precip_prob": daily["precipitation_probability_max"][i],
+                     **weather_code_info(daily["weather_code"][i])})
+    return {
+        "available": True, "place": place.get("name"), "region": place.get("admin1"), "time": cur.get("time"),
+        "current": {"temperature": cur.get("temperature_2m"), "feels_like": cur.get("apparent_temperature"),
+                    "precipitation": cur.get("precipitation"), "wind": cur.get("wind_speed_10m"),
+                    "humidity": cur.get("relative_humidity_2m"), **info},
+        "advice": weather_advice(cur.get("temperature_2m"), cur.get("precipitation"), cur.get("wind_speed_10m"), code),
+        "hours": hours, "days": days,
+    }
+
 def build_plan(db: Session, user: User, day: date) -> dict:
     lessons = lessons_for_date(db, user, day)
     windows = find_windows(lessons)
