@@ -1,5 +1,7 @@
 aiogram==3.17.0
 SQLAlchemy==2.0.38
 PyMySQL==1.1.1
+cryptography==44.0.2
+python-dotenv==1.0.1
 pydantic-settings==2.8.1
 httpx==0.28.1

@@ -1,20 +1,32 @@
-import asyncio, os
+import asyncio, logging, os
+from pathlib import Path
 from datetime import date, timedelta
-from aiogram import Bot, Dispatcher, Router
+from dotenv import load_dotenv
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app_models import User, Lesson, BagRule
 from plan import plan_text
 
+# При запуске без Docker читаем тот же .env из корня проекта, что и backend (в Docker переменные приходят из compose).
+ROOT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT_DIR / ".env")
+load_dotenv(Path(__file__).resolve().parent / ".env")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("studypilot.bot")
+
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./studypilot.db")
+# Тот же файл SQLite, что и у backend, если DATABASE_URL не задан.
+DATABASE_URL = os.getenv("DATABASE_URL") or f"sqlite:///{(ROOT_DIR / 'data' / 'studypilot.db').as_posix()}"
+if DATABASE_URL.startswith("sqlite:///"):
+    Path(DATABASE_URL.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://example.com")
-if not TOKEN or TOKEN == "replace_me":
-    raise RuntimeError("Задайте TELEGRAM_BOT_TOKEN в .env")
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()
+if not TOKEN or TOKEN in ("replace_me", "your_bot_token"):
+    raise RuntimeError("Задайте TELEGRAM_BOT_TOKEN в .env (токен из @BotFather)")
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=1800)
 Session = sessionmaker(bind=engine)
 router = Router()
 
@@ -25,12 +37,27 @@ async def start(message: Message):
         if not user:
             user = User(telegram_id=message.from_user.id, name=message.from_user.full_name or "Студент")
             db.add(user); db.commit()
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Открыть StudyPilot", web_app=WebAppInfo(url=WEBAPP_URL))],
-        [InlineKeyboardButton(text="План на сегодня", callback_data="today"),
-         InlineKeyboardButton(text="План на завтра", callback_data="tomorrow")]
-    ])
+    rows = []
+    # Telegram принимает Web App кнопку только с https-адресом; с заглушкой/localhost /start падает с BUTTON_URL_INVALID.
+    if WEBAPP_URL.startswith("https://") and "example" not in WEBAPP_URL and "localhost" not in WEBAPP_URL:
+        rows.append([InlineKeyboardButton(text="Открыть StudyPilot", web_app=WebAppInfo(url=WEBAPP_URL))])
+    else:
+        log.warning("WEBAPP_URL не задан или не https — кнопка Mini App не показывается")
+    rows.append([InlineKeyboardButton(text="План на сегодня", callback_data="today"),
+                 InlineKeyboardButton(text="План на завтра", callback_data="tomorrow")])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
     await message.answer("Привет! Я StudyPilot — помогу подготовиться к учебному дню.\n\nДобавь расписание и правила рюкзака в Mini App.", reply_markup=keyboard)
+
+@router.callback_query(F.data.in_({"today", "tomorrow"}))
+async def plan_callback(call: CallbackQuery):
+    with Session() as db:
+        user = db.query(User).filter_by(telegram_id=call.from_user.id).first()
+        if not user:
+            user = User(telegram_id=call.from_user.id, name=call.from_user.full_name or "Студент")
+            db.add(user); db.commit()
+        text = plan_text(db, user, call.data)
+    await call.message.answer(text)
+    await call.answer()
 
 @router.message(Command("help"))
 async def help_cmd(message: Message):
@@ -89,6 +116,9 @@ async def main():
     bot = Bot(TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
+    me = await bot.get_me()  # здесь сразу видно, если токен недействителен/отозван (401 Unauthorized)
+    log.info("Бот запущен: @%s, БД: %s", me.username, engine.url.render_as_string(hide_password=True))
+    await bot.delete_webhook(drop_pending_updates=False)  # иначе polling конфликтует с установленным webhook
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

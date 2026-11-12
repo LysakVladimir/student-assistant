@@ -1,11 +1,28 @@
+import os
 from datetime import date, timedelta, datetime
 from app_models import Lesson, BagRule
 TYPES={"lecture":"лекция","seminar":"семинар","lab":"лабораторная","physical":"физкультура","exam":"экзамен","other":"занятие"}
 DAYS=["Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье"]
+
+def week_parity(on: date) -> str:
+    """"odd"/"even" — та же логика, что в backend (ODD_WEEK_REFERENCE = любая дата нечётной недели)."""
+    ref = None
+    raw = os.getenv("ODD_WEEK_REFERENCE", "").strip()
+    if raw:
+        try: ref = date.fromisoformat(raw)
+        except ValueError: ref = None
+    if ref is None:
+        year = on.year if on >= date(on.year, 9, 1) else on.year - 1
+        ref = date(year, 9, 1)
+    weeks = ((on - timedelta(days=on.weekday())) - (ref - timedelta(days=ref.weekday()))).days // 7
+    return "odd" if weeks % 2 == 0 else "even"
+
 def plan_text(db, user, day="today"):
     target=date.today()+(timedelta(days=1) if day=="tomorrow" else timedelta())
-    lessons=db.query(Lesson).filter_by(user_id=user.id, weekday=target.weekday(), active=True).order_by(Lesson.start_time).all()
-    lines=[f"📅 План на {DAYS[target.weekday()]}, {target:%d.%m}"]
+    parity=week_parity(target)
+    rows=db.query(Lesson).filter_by(user_id=user.id, weekday=target.weekday(), active=True).order_by(Lesson.start_time).all()
+    lessons=[l for l in rows if l.week_parity in ("both", parity)]
+    lines=[f"📅 План на {DAYS[target.weekday()]}, {target:%d.%m} ({'нечётная' if parity=='odd' else 'чётная'} неделя)"]
     if not lessons:
         lines.append("Занятий в расписании нет.")
     else:

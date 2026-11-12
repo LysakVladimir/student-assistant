@@ -1,6 +1,8 @@
+name: studypilot
 services:
   mysql:
     image: mysql:8.4
+    restart: unless-stopped
     environment:
       MYSQL_DATABASE: studypilot
       MYSQL_USER: studypilot
@@ -18,6 +20,7 @@ services:
 
   backend:
     build: ./backend
+    restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: mysql+pymysql://studypilot:studypilot_dev_password@mysql:3306/studypilot?charset=utf8mb4
@@ -29,6 +32,7 @@ services:
 
   bot:
     build: ./bot
+    restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: mysql+pymysql://studypilot:studypilot_dev_password@mysql:3306/studypilot?charset=utf8mb4
@@ -39,6 +43,7 @@ services:
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
     env_file: .env
     ports:
       - "5173:5173"

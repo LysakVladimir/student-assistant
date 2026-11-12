@@ -57,21 +57,22 @@ def delete_lesson(lesson_id: int, db: Session = Depends(get_db), user: User = De
 
 
 @app.get("/api/week-parity")
-def week_parity():
-    """Текущая чётность недели (odd/even) для фильтрации занятий."""
-    return {"parity": current_week_parity()}
+def week_parity(day: str = "today"):
+    """Чётность недели (odd/even) для фильтрации занятий."""
+    target = date.today() + (timedelta(days=1) if day == "tomorrow" else timedelta())
+    return {"parity": current_week_parity(target)}
 
 
 @app.post("/api/lessons/parse")
 def parse_lessons(payload: LessonParseIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    """Спарсить официальное расписание ГУАП по номеру группы и добавить в расписание пользователя.
+    """Спарсить официальное расписание ГУАП по номеру группы.
 
-    Существующие занятия не удаляются (replace=False). Чтобы полностью заменить расписание,
-    удалите текущие занятия вручную перед парсингом.
+    Текущие занятия пользователя заменяются спарсенными (replace=True), но только если сайт
+    вернул расписание: при ошибке сайта/неверной группе старые данные не трогаются.
     """
     logger.info("[parse_lessons] user_id=%s group=%s", user.id, payload.group_name)
     try:
-        saved = save_guap_schedule(db, user, payload.group_name, replace=False)
+        saved = save_guap_schedule(db, user, payload.group_name.strip(), replace=True)
         logger.info("[parse_lessons] saved %d lessons for group=%s", len(saved), payload.group_name)
         return {"ok": True, "group": payload.group_name, "count": len(saved), "lessons": saved}
     except Exception as e:

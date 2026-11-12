@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta
 import httpx
 from sqlalchemy.orm import Session
 from .models import Lesson, BagRule, User
+from .config import settings
 import requests
 from bs4 import BeautifulSoup
 import json
@@ -14,25 +15,34 @@ logger = logging.getLogger(__name__)
 WEEKDAYS_RU = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
 TYPE_RU = {"lecture":"лекция", "seminar":"семинар", "lab":"лабораторная", "physical":"физкультура", "exam":"экзамен", "other":"занятие"}
 
-def current_week_parity(reference_date: date | None = None) -> str:
-    """Текущая неделя: "odd" (нечётная) или "even" (чётная).
+def current_week_parity(on: date | None = None, reference_date: date | None = None) -> str:
+    """Чётность недели, в которую попадает дата `on` (по умолчанию сегодня): "odd" или "even".
 
-    Отсчёт ведётся от reference_date (по умолчанию 1 сентября текущего года).
-    Первая неделя считается нечётной. Позволяет корректно фильтровать пары,
-        которые идут только по чётным или только по нечётным неделям.
+    Точка отсчёта — любая дата внутри НЕЧЁТНОЙ недели. Порядок выбора:
+    1) аргумент reference_date;
+    2) переменная окружения ODD_WEEK_REFERENCE (YYYY-MM-DD) — рекомендуется задать,
+       если расчёт расходится с сайтом ГУАП;
+    3) 1 сентября ближайшего учебного года (первая неделя — нечётная).
     """
+    on = on or date.today()
+    if reference_date is None and settings.odd_week_reference:
+        try:
+            reference_date = date.fromisoformat(settings.odd_week_reference)
+        except ValueError:
+            logger.warning("ODD_WEEK_REFERENCE=%r не похоже на YYYY-MM-DD, игнорирую", settings.odd_week_reference)
     if reference_date is None:
-        reference_date = date(date.today().year, 9, 1)
-    today = date.today()
+        year = on.year if on >= date(on.year, 9, 1) else on.year - 1
+        reference_date = date(year, 9, 1)
     ref_monday = reference_date - timedelta(days=reference_date.weekday())
-    today_monday = today - timedelta(days=today.weekday())
-    weeks_passed = (today_monday - ref_monday).days // 7
+    day_monday = on - timedelta(days=on.weekday())
+    weeks_passed = (day_monday - ref_monday).days // 7
     return "odd" if weeks_passed % 2 == 0 else "even"
 
 
 def lessons_for_date(db: Session, user: User, day: date) -> list[Lesson]:
     rows = db.query(Lesson).filter_by(user_id=user.id, weekday=day.weekday(), active=True).order_by(Lesson.start_time).all()
-    parity = current_week_parity()
+    # Чётность считаем для самой даты, а не для «сегодня»: в воскресенье «завтра» уже другая неделя.
+    parity = current_week_parity(day)
     return [x for x in rows if x.week_parity == "both" or x.week_parity == parity]
 
 def find_windows(lessons: list[Lesson], threshold: int = 40) -> list[dict]:
@@ -177,8 +187,11 @@ def get_guap_schedule_by_name(group_name):
         print(f"Ошибка при запросе: {e}")
         return None
 
-    # 3. Парсим расписание (код из предыдущего сообщения)
-    soup = BeautifulSoup(response.text, 'html.parser')
+    return parse_schedule_html(response.text, group_name)
+
+def parse_schedule_html(html, group_name=""):
+    """Разбирает HTML страницы https://guap.ru/rasp?gr=ID в {день: [занятия]}."""
+    soup = BeautifulSoup(html, 'html.parser')
     container = soup.find('div', class_='container content mb-5')
     if not container:
         logger.warning("Контейнер расписания не найден в HTML для группы %s.", group_name)
@@ -205,6 +218,7 @@ def get_guap_schedule_by_name(group_name):
                     lesson_data = {
                         "time": current_time,
                         "week": "",
+                        "week_class": "",
                         "type": "",
                         "subject": "",
                         "location": "",
@@ -213,8 +227,13 @@ def get_guap_schedule_by_name(group_name):
                         "groups": []
                     }
                     
-                    week_div = sibling.find('div', class_=lambda c: c and ('week1' in c or 'week2' in c))
-                    if week_div: lesson_data["week"] = week_div.get('title', '')
+                    # Маркер недели: элемент с классом week1/week2 и подсказкой (title) «Чётная/Нечётная неделя».
+                    # Пары без маркера идут на обеих неделях.
+                    week_el = sibling.find(class_=re.compile(r'^week[12]$'))
+                    if week_el:
+                        lesson_data["week"] = week_el.get('title', '') or ''
+                        lesson_data["week_class"] = next(
+                            (c for c in week_el.get('class', []) if re.fullmatch(r'week[12]', c)), '')
                     
                     type_div = sibling.find('div', class_='fs-6 lh-sm opacity-50')
                     if type_div: lesson_data["type"] = clean_text(type_div.text)
@@ -250,25 +269,34 @@ def get_guap_schedule_by_id(group_id):
     return get_guap_schedule_by_name(str(group_id))
 
 
-def parse_week_parity(week_title: str) -> str:
-    """Переводит пометку недели с сайта ГУАП в week_parity: "odd"/"even"/"both"."""
-    text = clean_text(week_title).lower()
-    if not text:
-        return "both"
-    if any(k in text for k in ("2", "четн", "even")):
-        return "even"
-    if any(k in text for k in ("1", "нечетн", "нечётн", "odd")):
+def parse_week_parity(week_title: str, week_class: str = "") -> str:
+    """Переводит пометку недели с сайта ГУАП в week_parity: "odd" / "even" / "both".
+
+    ВАЖНО: «нечётная» содержит в себе «чётная», поэтому сначала проверяем «нечет»,
+    иначе все нечётные пары записываются как чётные.
+    Приоритет: текст подсказки (title) -> CSS-класс week1/week2 -> "both" (каждую неделю).
+    """
+    text = clean_text(week_title).lower().replace("ё", "е")
+    if "нечет" in text or "odd" in text:
         return "odd"
+    if "чет" in text or "even" in text:
+        return "even"
+    if week_class == "week1":
+        return "odd"
+    if week_class == "week2":
+        return "even"
     return "both"
 
 
-def _map_lesson_type(raw: str) -> str:
+def _map_lesson_type(raw: str, subject: str = "") -> str:
     text = clean_text(raw).lower()
+    if "физическая культура" in (subject or "").lower() or "физкультур" in (subject or "").lower():
+        return "physical"
     mapping = {
         "лекция": "lecture", "семинар": "seminar", "лабораторная": "lab", "лаб": "lab",
         "физкультура": "physical", "физра": "physical",
         "экзамен": "exam", "зачёт": "other", "зачет": "other",
-        "консультация": "other", "практика": "seminar",
+        "консультация": "other", "практика": "seminar", "практическ": "seminar",
     }
     for key, value in mapping.items():
         if key in text:
@@ -280,7 +308,7 @@ def _time_range(time_str: str) -> tuple[str, str]:
     """Извлекает (start, end) HH:MM из строки вида '3 пара (13:00—14:30)'."""
     if not time_str:
         return ("09:00", "10:30")
-    times = re.findall(r"\d{1,2}:\d{2}", time_str)
+    times = [t.zfill(5) for t in re.findall(r"\d{1,2}:\d{2}", time_str)]  # "9:30" -> "09:30" (иначе ломается сортировка)
     if len(times) >= 2:
         return (times[0], times[1])
     if len(times) == 1:
@@ -314,6 +342,13 @@ def save_guap_schedule(db: Session, user: User, group_name: str, replace: bool =
     if replace:
         deleted = db.query(Lesson).filter_by(user_id=user.id).delete()
         logger.info("Удалено %d старых занятий пользователя %s.", deleted, user.id)
+    markers = {}
+    for _lessons in data.values():
+        for _l in _lessons:
+            key = (_l.get("week_class", ""), _l.get("week", ""))
+            markers[key] = markers.get(key, 0) + 1
+    logger.info("Найденные маркеры недели (класс, title) -> кол-во: %s", markers)
+    seen = set()
     saved = []
     total_lessons = 0
     skipped_groups = 0
@@ -329,11 +364,16 @@ def save_guap_schedule(db: Session, user: User, group_name: str, replace: bool =
                 skipped_groups += 1
                 continue
             start_time, end_time = _time_range(lesson.get("time", ""))
-            week_parity = parse_week_parity(lesson.get("week", ""))
+            dedupe_key = (weekday, start_time, end_time, lesson.get("subject", ""), lesson.get("type", ""),
+                          lesson.get("week", ""), lesson.get("week_class", ""))
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            week_parity = parse_week_parity(lesson.get("week", ""), lesson.get("week_class", ""))
             row = Lesson(
                 user_id=user.id,
                 subject=lesson.get("subject") or "Занятие",
-                lesson_type=_map_lesson_type(lesson.get("type", "")),
+                lesson_type=_map_lesson_type(lesson.get("type", ""), lesson.get("subject", "")),
                 weekday=weekday,
                 start_time=start_time,
                 end_time=end_time,

@@ -8,7 +8,7 @@ const dev = import.meta.env.VITE_DEV_AUTH === 'true';
 const headers = () => {
   const h = {'Content-Type':'application/json'};
   if (WebApp.initData) h['X-Telegram-Init-Data'] = WebApp.initData;
-  else if (dev) h['X-Dev-Telegram-Id'] = '100000001';
+  else if (dev) h['X-Dev-Telegram-Id'] = import.meta.env.VITE_DEV_TELEGRAM_ID || '100000001';
   return h;
 };
 async function request(path, options={}) {
@@ -50,7 +50,7 @@ function App(){
     <div className="two"><label>Начало<input type="time" value={lesson.start_time} onChange={e=>setLesson({...lesson,start_time:e.target.value})}/></label><label>Конец<input type="time" value={lesson.end_time} onChange={e=>setLesson({...lesson,end_time:e.target.value})}/></label></div>
     <div className="two"><label>Аудитория<input value={lesson.room} onChange={e=>setLesson({...lesson,room:e.target.value})}/></label><label>Корпус<input value={lesson.campus} onChange={e=>setLesson({...lesson,campus:e.target.value})}/></label></div>
     <button className="primary">Добавить занятие</button></form>
-    <div className="panel"><h3 style={{margin:'0 0 8px 0'}}>Спарсить расписание ГУАП по группе</h3><p className="muted">Введите номер группы (например, 4414). Текущие занятия будут заменены спарсенными.</p><div className="two"><label>Номер группы<input value={parseGroup} onChange={e=>setParseGroup(e.target.value)} placeholder="4414"/></label><button className="primary" onClick={parseSchedule} disabled={parsing}>{parsing?'Идёт парсинг...':'Спарсить расписание'}</button></div></div>
+    <div className="panel"><h3 style={{margin:'0 0 8px 0'}}>Спарсить расписание ГУАП по группе</h3><p className="muted">Введите номер группы. Текущие занятия будут заменены спарсенными.</p><div className="two"><label>Номер группы<input value={parseGroup} onChange={e=>setParseGroup(e.target.value)} placeholder="Например, 4414"/></label><button className="primary" onClick={parseSchedule} disabled={parsing}>{parsing?'Идёт парсинг...':'Спарсить расписание'}</button></div></div>
     {lessons.map(l=><article key={l.id}><b>{days[l.weekday]} {l.start}–{l.end}</b><span>{l.subject}</span><small>{types.find(t=>t[0]===l.type)?.[1]||l.type} · {l.room||'аудитория не указана'} · {parityLabels[l.week_parity]||l.week_parity}</small><button className="delete" onClick={()=>remove('/api/lessons/'+l.id)}>Удалить</button></article>)}
   </section>}
   {tab==='bag'&&<section><h2>Правила рюкзака</h2><p className="muted">Вещи разделяйте запятыми. Примеры: зарядка, пропуск, наушники.</p><form onSubmit={addRule} className="panel">
