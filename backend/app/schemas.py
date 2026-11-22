@@ -41,3 +41,25 @@ class BagRuleIn(BaseModel):
 
 class LessonParseIn(BaseModel):
     group_name: str = Field(min_length=1, max_length=100)
+
+class ChatSettingsIn(BaseModel):
+    enabled: bool | None = None
+    custom_rules: str | None = Field(default=None, max_length=4000)
+    digest_mode: Literal["off", "daily", "weekly"] | None = None
+    digest_hour: int | None = Field(default=None, ge=0, le=23)
+    external_ai_enabled: bool | None = None
+
+class AISettingsIn(BaseModel):
+    mode: Literal["economy", "auto", "quality"] | None = None
+    ai_enabled: bool | None = None
+
+class MonitorRuleIn(BaseModel):
+    query: str = Field(min_length=3, max_length=1000)
+    chat_id: int | None = None
+    priority: Literal["low", "normal", "high"] = "normal"
+    cooldown_minutes: int = Field(default=60, ge=5, le=10080)
+
+class AgentChatIn(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+    chat_ids: list[int] = Field(default_factory=list, max_length=20)
+    detail: Literal["brief", "normal", "detailed"] = "normal"

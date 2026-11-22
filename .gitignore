@@ -1,11 +1,56 @@
 .env
 .env.*
 !.env.example
+
+# Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# JavaScript / frontend builds
 node_modules/
 dist/
+coverage/
+
+# Local databases, backups and dumps
 *.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sql
+*.dump
+*.bak
+*_dump.txt
 data/
+
+# Logs, generated exports and confidential chat/API diagnostics
+*.log
+logs/
+exports/
+telegram_export*.json
+chat_export*.json
+generation-*-log.json
+*polza_export*.csv
+
+# Secrets and local certificates
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Temporary/editor/OS files
+tmp/
+temp/
+*.tmp
+*.temp
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
